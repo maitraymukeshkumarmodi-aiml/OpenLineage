@@ -11,23 +11,23 @@ To learn more about dbt, visit the [documentation site](https://docs.getdbt.com)
 
 dbt generates rich telemetry and metadata that OpenLineage uses to trace datasets, jobs, and lineage.
 
-OpenLineage processes dbt telemetry using **two primary parsing mechanisms** based on *when* and *how* metadata is collected:
+OpenLineage processes dbt telemetry using **two primary parsing mechanisms** based on _when_ and _how_ metadata is collected:
 
 1. **Artifact Processor (Post-Run)**: Extracts lineage after dbt finishes by parsing generated JSON artifacts (`manifest.json`, `run_results.json`, and optionally `catalog.json`).
 2. **Structured Log Processor (Real-Time)**: Extracts lineage while dbt runs by consuming dbt's structured JSON log stream in real time.
 
 ### Ingestion Approaches & Parsing Modes Comparison
 
-| Feature / Dimension | Artifact Processor Mode | Structured Log Processor Mode |
-| :--- | :--- | :--- |
-| **Parsing Mechanism** | Post-Run (Parses `manifest.json`, `run_results.json`, `catalog.json`) | Real-Time (Streams & parses JSON log lines as dbt runs) |
-| **Telemetry Source** | Target JSON artifact files | Standard Output / JSON Log Stream |
-| **Event Hierarchy** | Flat node events (`START`, `COMPLETE`/`FAIL` per node) | Nested hierarchy (`Command → Node → Query`) |
-| **Query Capture** | Retains only the last query ID per node (from `run_results.json`) | Captures all sequential SQL queries executed by a node |
-| **Schema & Catalog** | Full schema & column data types when `catalog.json` exists | Basic metadata from execution logs |
-| **Key Advantage** | High schema fidelity; simple post-run execution | Instant real-time observability; full multi-query visibility |
-| **Assumptions / Trade-offs** | Requires dbt command to finish before emitting lineage | Assumes query log events arrive sequentially in stdout |
-| **Execution Options** | `dbt-ol run` (CLI default) or `DbtLocalArtifactProcessor` (Cosmos/Airflow) | `dbt-ol run --consume-structured-logs` |
+| Feature / Dimension          | Artifact Processor Mode                                                    | Structured Log Processor Mode                                |
+| :--------------------------- | :------------------------------------------------------------------------- | :----------------------------------------------------------- |
+| **Parsing Mechanism**        | Post-Run (Parses `manifest.json`, `run_results.json`, `catalog.json`)      | Real-Time (Streams & parses JSON log lines as dbt runs)      |
+| **Telemetry Source**         | Target JSON artifact files                                                 | Standard Output / JSON Log Stream                            |
+| **Event Hierarchy**          | Flat node events (`START`, `COMPLETE`/`FAIL` per node)                     | Nested hierarchy (`Command → Node → Query`)                  |
+| **Query Capture**            | Retains only the last query ID per node (from `run_results.json`)          | Captures all sequential SQL queries executed by a node       |
+| **Schema & Catalog**         | Full schema & column data types when `catalog.json` exists                 | Basic metadata from execution logs                           |
+| **Key Advantage**            | High schema fidelity; simple post-run execution                            | Instant real-time observability; full multi-query visibility |
+| **Assumptions / Trade-offs** | Requires dbt command to finish before emitting lineage                     | Assumes query log events arrive sequentially in stdout       |
+| **Execution Options**        | `dbt-ol run` (CLI default) or `DbtLocalArtifactProcessor` (Cosmos/Airflow) | `dbt-ol run --consume-structured-logs`                       |
 
 ---
 
@@ -40,37 +40,41 @@ OpenLineage processes dbt telemetry using **two primary parsing mechanisms** bas
 The Artifact Processor extracts lineage after a dbt run completes by parsing dbt's generated JSON artifact files.
 
 #### How it Works
+
 1. When dbt finishes, the processor reads three target JSON files from the `target/` directory:
-   * `manifest.json`: Contains the complete dependency graph, compiled SQL queries, and node definitions.
-   * `run_results.json`: Contains execution results, execution status, node timing, and query IDs.
-   * `catalog.json` *(optional)*: Contains database schema information, column data types, and table statistics.
+   - `manifest.json`: Contains the complete dependency graph, compiled SQL queries, and node definitions.
+   - `run_results.json`: Contains execution results, execution status, node timing, and query IDs.
+   - `catalog.json` _(optional)_: Contains database schema information, column data types, and table statistics.
 2. The processor converts the node metadata into OpenLineage dataset and job definitions. Although the Artifact Processor emits flat node-level events (a separate event pair for each model or test), it links each node event to an orchestrator's parent run (such as an Airflow DAG or Cosmos task) by appending a `parent` run facet (`ParentRunFacet`) when parent metadata is provided.
 
 #### Event Emission Model
-* **Events per Command**: The Artifact Processor emits a pair of events (**START** and **COMPLETE** or **FAIL**) for every executed dbt node (model, seed, snapshot, or test). 
-* For example, if a `dbt run` executes 5 models, the Artifact Processor will emit 10 OpenLineage events (5 `START` events followed by 5 `COMPLETE`/`FAIL` events).
+
+- **Events per Command**: The Artifact Processor emits a pair of events (**START** and **COMPLETE** or **FAIL**) for every executed dbt node (model, seed, snapshot, or test).
+- For example, if a `dbt run` executes 5 models, the Artifact Processor will emit 10 OpenLineage events (5 `START` events followed by 5 `COMPLETE`/`FAIL` events).
 
 #### OpenLineage Facets Emitted
+
 The Artifact Processor enriches OpenLineage events with rich dbt-specific and standard facets:
 
-* **Always Present (Core Facets)**:
-  * **Job Facet — `jobType`**: Identifies the job type (`jobType="JOB"`, `processingType="BATCH"`, `integration="DBT"`).
-  * **Job Facet — `dbt_node_metadata`**: Contains node details including `unique_id`, `resource_type`, `materialization`, `original_file_path`, and `tags`.
-  * **Run Facet — `dbt_version`**: Contains the dbt core version and active database adapter name.
-  * **Run Facet — `dbt_run`**: Contains run-wide execution metadata (e.g. `invocation_id`, `project_name`, `profile_name`, `full_refresh`).
-  * **Dataset Facet — `symlink_identifiers`**: Contains the database, schema, and table/view names for input and output datasets.
-  * **Dataset Facet — `documentation`**: Contains model-level and dataset descriptions from dbt project documentation.
-* **Optional Facets**:
-  * **Run Facet — `parent`**: Identifies the orchestrator's parent run (`ParentRunFacet`) when parent context is provided.
-  * **Dataset Facet — `schema`**: Detailed column names and data types (emitted when `catalog.json` is available).
-  * **Dataset Facet — `dbt_model`**: Detailed model configuration (e.g. `materialized`, `owner`, `incremental` strategy).
-  * **Job Facet — `sql`**: Compiled SQL source code for the model or test.
-  * **Dataset Facet — `columnLineage`**: Fine-grained column-level input/output mapping (when column-level lineage parsing is enabled).
-  * **Dataset Facet — `dbt_exposures`**: Metadata for downstream dbt exposures.
+- **Always Present (Core Facets)**:
+  - **Job Facet — `jobType`**: Identifies the job type (`jobType="JOB"`, `processingType="BATCH"`, `integration="DBT"`).
+  - **Job Facet — `dbt_node_metadata`**: Contains node details including `unique_id`, `resource_type`, `materialization`, `original_file_path`, and `tags`.
+  - **Run Facet — `dbt_version`**: Contains the dbt core version and active database adapter name.
+  - **Run Facet — `dbt_run`**: Contains run-wide execution metadata (e.g. `invocation_id`, `project_name`, `profile_name`, `full_refresh`).
+  - **Dataset Facet — `symlink_identifiers`**: Contains the database, schema, and table/view names for input and output datasets.
+  - **Dataset Facet — `documentation`**: Contains model-level and dataset descriptions from dbt project documentation.
+- **Optional Facets**:
+  - **Run Facet — `parent`**: Identifies the orchestrator's parent run (`ParentRunFacet`) when parent context is provided.
+  - **Dataset Facet — `schema`**: Detailed column names and data types (emitted when `catalog.json` is available).
+  - **Dataset Facet — `dbt_model`**: Detailed model configuration (e.g. `materialized`, `owner`, `incremental` strategy).
+  - **Job Facet — `sql`**: Compiled SQL source code for the model or test.
+  - **Dataset Facet — `columnLineage`**: Fine-grained column-level input/output mapping (when column-level lineage parsing is enabled).
+  - **Dataset Facet — `dbt_exposures`**: Metadata for downstream dbt exposures.
 
 > ℹ️ **Code Reference Disclaimer**: The OpenLineage dbt integration evolves rapidly as dbt and OpenLineage add new features. The authoritative source for supported facets and schemas is the source code in [`facets.py`](https://github.com/OpenLineage/OpenLineage/tree/main/integration/common/src/openlineage/common/provider/dbt/facets.py).
 
 #### Programmatic & Orchestrator Usage
+
 Orchestrators like Apache Airflow (e.g., using [Astronomer Cosmos](https://astronomer.github.io/astronomer-cosmos/)) invoke the `DbtLocalArtifactProcessor` library directly after dbt task completion to parse artifacts without requiring CLI wrappers.
 
 ---
@@ -80,12 +84,15 @@ Orchestrators like Apache Airflow (e.g., using [Astronomer Cosmos](https://astro
 The Structured Log Processor is a real-time integration method that parses dbt's JSON log stream while the dbt process executes.
 
 #### How it Works
+
 Starting with dbt Core v1.x, dbt emits structured JSON log events (JSON lines) during execution.
+
 1. The integration listens to dbt's log stream (either from stdout or log files).
 2. As log events occur (such as `MainReportVersion`, `NodeStart`, `SQLQuery`, `NodeFinished`), the processor parses them on the fly.
 3. OpenLineage events are emitted **in real-time** while the dbt run is actively executing.
 
 #### Event Hierarchy & Structural Differences
+
 Unlike the Artifact Processor which produces flat node-level events after execution, the Structured Log Processor constructs a **nested execution hierarchy**:
 
 1. **dbt Command Run**: An overall parent event representing the complete `dbt` invocation (e.g. `dbt run`). Parent run context passed from an external orchestrator is attached to this top-level command run.
@@ -102,10 +109,11 @@ Orchestrator Parent Run (Airflow / Cosmos)
 ```
 
 #### Query Capture & Multi-Query Attribution
-* **Multi-Query Capture**: If a single dbt model executes multiple SQL statements (e.g., pre-hooks, temporary table creation, main model transformation, and post-hooks):
-  * **Artifact Processor**: `run_results.json` only retains the last adapter response / query ID for a node, dropping earlier queries.
-  * **Structured Log Processor**: Captures every individual SQL query event emitted by dbt as it executes.
-* **Sequential Log Attribution Assumption**: The Structured Log Processor attributes SQL queries to nodes under the assumption that query log events arrive **sequentially**. It assigns each captured query ID to the currently active model node based on the stream event order.
+
+- **Multi-Query Capture**: If a single dbt model executes multiple SQL statements (e.g., pre-hooks, temporary table creation, main model transformation, and post-hooks):
+  - **Artifact Processor**: `run_results.json` only retains the last adapter response / query ID for a node, dropping earlier queries.
+  - **Structured Log Processor**: Captures every individual SQL query event emitted by dbt as it executes.
+- **Sequential Log Attribution Assumption**: The Structured Log Processor attributes SQL queries to nodes under the assumption that query log events arrive **sequentially**. It assigns each captured query ID to the currently active model node based on the stream event order.
 
 ---
 
@@ -114,6 +122,7 @@ Orchestrator Parent Run (Airflow / Cosmos)
 Whether using the `dbt-ol` CLI wrapper, `DbtLocalArtifactProcessor`, or `DbtStructuredLogsProcessor`, you can link the dbt execution to a parent orchestrator run (such as an Airflow DAG or Cosmos task):
 
 ### 1. Via Environment Variables
+
 Set the standardized `OPENLINEAGE_CONTEXT` environment variable (a JSON payload formatted with `parent` and optional `root` keys):
 
 ```bash
@@ -126,11 +135,13 @@ export OPENLINEAGE_CONTEXT='{
 ```
 
 Alternatively, use the legacy `OPENLINEAGE_PARENT_ID` format:
+
 ```bash
 export OPENLINEAGE_PARENT_ID="airflow-namespace/airflow-dag.dbt_task/f99310b4-3c3c-1a1a-2b2b-c1b95c24ff11"
 ```
 
 ### 2. Via Programmatic APIs
+
 When invoking the Python processors directly, instantiate and pass a `ParentRunMetadata` object:
 
 ```python
@@ -156,6 +167,7 @@ processor = DbtLocalArtifactProcessor(
 OpenLineage defines custom facets specifically for dbt metadata. Below are the custom facets attached to OpenLineage jobs, runs, and datasets:
 
 ### 1. `dbt_node_metadata` (`DbtNodeJobFacet`)
+
 Attached to node jobs (models, tests, seeds, snapshots) to capture node properties defined in the dbt manifest.
 
 ```json
@@ -172,6 +184,7 @@ Attached to node jobs (models, tests, seeds, snapshots) to capture node properti
 ```
 
 ### 2. `dbt_version` (`DbtVersionRunFacet`)
+
 Attached to runs to record the dbt core version.
 
 ```json
@@ -184,6 +197,7 @@ Attached to runs to record the dbt core version.
 ```
 
 ### 3. `dbt_run` (`DbtRunRunFacet`)
+
 Attached to runs to capture invocation metadata.
 
 ```json
@@ -199,6 +213,7 @@ Attached to runs to capture invocation metadata.
 ```
 
 ### 4. `dbt_model` (`DbtModelDatasetFacet`)
+
 Attached to output datasets to record the model's resolved configuration (materialization, owner, and incremental strategies).
 
 ```json
@@ -218,6 +233,7 @@ Attached to output datasets to record the model's resolved configuration (materi
 ```
 
 ### 5. `dbt_exposures` (`DbtExposuresDatasetFacet`)
+
 Attached to model output datasets listing downstream dbt exposures (dashboards, notebooks, etc.).
 
 ```json
@@ -244,11 +260,11 @@ The `dbt-ol` CLI command is a 1:1 drop-in replacement for the standard `dbt` com
 
 ### Execution Modes in `dbt-ol`
 
-* **Artifact Mode (Default)**: Executes standard `dbt` and parses target artifacts post-run:
+- **Artifact Mode (Default)**: Executes standard `dbt` and parses target artifacts post-run:
   ```bash
   dbt-ol run
   ```
-* **Structured Log Mode**: Streams JSON logs and emits events in real-time as models run:
+- **Structured Log Mode**: Streams JSON logs and emits events in real-time as models run:
   ```bash
   dbt-ol run --consume-structured-logs
   ```
@@ -257,20 +273,20 @@ The `dbt-ol` CLI command is a 1:1 drop-in replacement for the standard `dbt` com
 
 Right now, `openlineage-dbt` supports these dbt adapters:
 
-* `bigquery`
-* `snowflake`
-* `spark` (`thrift` and `odbc`, but not `local`)
-* `redshift`
-* `athena`
-* `glue`
-* `postgres`
-* `clickhouse`
-* `trino`
-* `databricks`
-* `sqlserver`
-* `fabric`
-* `dremio`
-* `duckdb`
+- `bigquery`
+- `snowflake`
+- `spark` (`thrift` and `odbc`, but not `local`)
+- `redshift`
+- `athena`
+- `glue`
+- `postgres`
+- `clickhouse`
+- `trino`
+- `databricks`
+- `sqlserver`
+- `fabric`
+- `dremio`
+- `duckdb`
 
 ### Installation & Configuration
 
@@ -293,9 +309,11 @@ OPENLINEAGE_NAMESPACE=dev
 ```
 
 You can also override the job name sent by dbt OpenLineage events by setting the environment variable:
+
 ```bash
 OPENLINEAGE_DBT_JOB_NAME=<your-job-name>
 ```
+
 or by passing `--openlineage-dbt-job-name <your-job-name>` on the command line.
 
 More configuration parameters can be found in [Python client documentation](../client/python/configuration.md).
@@ -304,7 +322,7 @@ More configuration parameters can be found in [Python client documentation](../c
 
 ## Where can I learn more?
 
-* Watch [a short demonstration of the integration in action](https://youtu.be/7caHXLDKacg)
+- Watch [a short demonstration of the integration in action](https://youtu.be/7caHXLDKacg)
 
 ## Feedback
 
